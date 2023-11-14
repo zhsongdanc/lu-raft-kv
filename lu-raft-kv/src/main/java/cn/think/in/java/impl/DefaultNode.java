@@ -55,7 +55,7 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 @Slf4j
 public class DefaultNode implements Node, ClusterMembershipChanges {
 
-    /** 选举时间间隔基数 */
+    /** 选举时间间隔基数 todo 含义？*/
     public volatile long electionTime = 15 * 1000;
     /** 上一次选举时间 */
     public volatile long preElectionTime = 0;
@@ -68,6 +68,7 @@ public class DefaultNode implements Node, ClusterMembershipChanges {
 
     private HeartBeatTask heartBeatTask = new HeartBeatTask();
     private ElectionTask electionTask = new ElectionTask();
+    // 复制失败的消息重新发给follower，并且有可能commit
     private ReplicationFailQueueConsumer replicationFailQueueConsumer = new ReplicationFailQueueConsumer();
 
     private LinkedBlockingQueue<ReplicationFailModel> replicationFailQueue = new LinkedBlockingQueue<>(2048);
@@ -267,6 +268,7 @@ public class DefaultNode implements Node, ClusterMembershipChanges {
             futureList.add(replication(peer, logEntry));
         }
 
+        // TODO szh 这里的size能否正确设置，任务执行完后
         CountDownLatch latch = new CountDownLatch(futureList.size());
         List<Boolean> resultList = new CopyOnWriteArrayList<>();
 
@@ -356,6 +358,7 @@ public class DefaultNode implements Node, ClusterMembershipChanges {
                 aentryParam.setLeaderCommit(commitIndex);
 
                 // 以我这边为准, 这个行为通常是成为 leader 后,首次进行 RPC 才有意义.
+                // TODO szh
                 Long nextIndex = nextIndexs.get(peer);
                 LinkedList<LogEntry> logEntries = new LinkedList<>();
                 if (entry.getIndex() >= nextIndex) {
@@ -461,6 +464,7 @@ public class DefaultNode implements Node, ClusterMembershipChanges {
                     }
                     if (status != LEADER) {
                         // 应该清空?
+                        // TODO szh
                         replicationFailQueue.clear();
                         continue;
                     }
@@ -470,6 +474,7 @@ public class DefaultNode implements Node, ClusterMembershipChanges {
                         log.warn("replication Fail event Queue maybe full or handler slow");
                     }
 
+                    // TODO szh 这里根本没有set，不理解
                     Callable callable = model.callable;
                     Future<Boolean> future = RaftThreadPool.submit(callable);
                     Boolean r = future.get(3000, MILLISECONDS);
@@ -541,6 +546,7 @@ public class DefaultNode implements Node, ClusterMembershipChanges {
             log.error("node {} will become CANDIDATE and start election leader, current term : [{}], LastEntry : [{}]",
                     peerSet.getSelf(), currentTerm, logModule.getLast());
 
+            // TODO 待看
             preElectionTime = System.currentTimeMillis() + ThreadLocalRandom.current().nextInt(200) + 150;
 
             currentTerm = currentTerm + 1;
@@ -556,6 +562,7 @@ public class DefaultNode implements Node, ClusterMembershipChanges {
             // 发送请求
             for (Peer peer : peers) {
 
+                // TODO 我一直认为LogModule里的可以是还没有应用到状态机的，如果不是，需要重新想一下
                 futureArrayList.add(RaftThreadPool.submit(() -> {
                     long lastTerm = 0L;
                     LogEntry last = logModule.getLast();
@@ -597,6 +604,7 @@ public class DefaultNode implements Node, ClusterMembershipChanges {
                         if (result == null) {
                             return -1;
                         }
+                        // TODO 是否一定会响应呢？
                         boolean isVoteGranted = result.isVoteGranted();
 
                         if (isVoteGranted) {
@@ -642,7 +650,7 @@ public class DefaultNode implements Node, ClusterMembershipChanges {
                 // else 重新选举
                 votedFor = "";
             }
-            // 再次更新选举时间
+            // 再次更新选举时间 TODO ??
             preElectionTime = System.currentTimeMillis() + ThreadLocalRandom.current().nextInt(200) + 150;
 
         }
@@ -651,6 +659,7 @@ public class DefaultNode implements Node, ClusterMembershipChanges {
     /**
      * 初始化所有的 nextIndex 值为自己的最后一条日志的 index + 1. 如果下次 RPC 时, 跟随者和leader 不一致,就会失败.
      * 那么 leader 尝试递减 nextIndex 并进行重试.最终将达成一致.
+     * // TODO 这里是否有可能还有没提交的？，猜测有可能，但是这里好像不是这么做的
      */
     private void becomeLeaderToDoThing() {
         nextIndexs = new ConcurrentHashMap<>();
@@ -678,6 +687,7 @@ public class DefaultNode implements Node, ClusterMembershipChanges {
         //  复制到其他机器
         for (Peer peer : peerSet.getPeersWithOutSelf()) {
             // TODO check self and RaftThreadPool
+            // TODO szh能这样写吗
             count++;
             // 并行发起 RPC 复制.
             futureList.add(replication(peer, logEntry));

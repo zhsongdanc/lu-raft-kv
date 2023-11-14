@@ -47,6 +47,7 @@ public class AentryParam implements Serializable {
     private String leaderId;
 
     /**新的日志条目紧随之前的索引值  */
+    // TODO 到底是不是已经提交的
     private long prevLogIndex;
 
     /** prevLogIndex 条目的任期号  */

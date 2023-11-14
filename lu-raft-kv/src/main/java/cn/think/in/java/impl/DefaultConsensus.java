@@ -58,6 +58,8 @@ public class DefaultConsensus implements Consensus {
      *      如果term < currentTerm返回 false （5.2 节）
      *      如果 votedFor 为空或者就是 candidateId，并且候选人的日志至少和自己一样新，那么就投票给他（5.2 节，5.4 节）
      */
+    // todo 发送这个请求的逻辑在哪？
+    // todo 这里使用tryLock,是因为每个请求投票使用了一个线程来处理？不使用队列？
     @Override
     public RvoteResult requestVote(RvoteParam param) {
         try {
@@ -77,6 +79,7 @@ public class DefaultConsensus implements Consensus {
 
             if ((StringUtil.isNullOrEmpty(node.getVotedFor()) || node.getVotedFor().equals(param.getCandidateId()))) {
 
+                // todo 这里为什么不用状态机里的数据
                 if (node.getLogModule().getLast() != null) {
                     // 对方没有自己新
                     if (node.getLogModule().getLast().getTerm() > param.getLastLogTerm()) {
@@ -186,11 +189,13 @@ public class DefaultConsensus implements Consensus {
 
             }
 
+            // TODO szh
             // 如果已经存在的日志条目和新的产生冲突（索引值相同但是任期号不同），删除这一条和之后所有的
             LogEntry existLog = node.getLogModule().read(((param.getPrevLogIndex() + 1)));
             if (existLog != null && existLog.getTerm() != param.getEntries()[0].getTerm()) {
                 // 删除这一条和之后所有的, 然后写入日志和状态机.
                 node.getLogModule().removeOnStartIndex(param.getPrevLogIndex() + 1);
+                // todo 上面只比较了一条，会不会出现问题？
             } else if (existLog != null) {
                 // 已经有日志了, 不能重复写入.
                 result.setSuccess(true);
