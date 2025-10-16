@@ -25,7 +25,12 @@ import lombok.NoArgsConstructor;
 import java.io.Serializable;
 
 /**
- * 日志条目
+ * 日志条目 - Raft协议中的核心数据结构
+ * 
+ * 每个日志条目包含：
+ * 1. index：日志条目的索引号，从1开始递增
+ * 2. term：创建该日志条目时的任期号
+ * 3. command：用户状态机要执行的命令
  *
  * @author 莫那·鲁道
  * @see LogModule
@@ -34,20 +39,30 @@ import java.io.Serializable;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class LogEntry implements Serializable, Comparable {
+public class LogEntry implements Serializable, Comparable<LogEntry> {
 
+    /** 日志条目的索引号，从1开始递增 */
     private Long index;
 
+    /** 创建该日志条目时的任期号 */
     private long term;
 
+    /** 用户状态机要执行的命令 */
     private Command command;
 
+    /**
+     * 比较两个日志条目的索引号
+     * 用于日志条目的排序和比较
+     * 
+     * @param o 要比较的另一个日志条目
+     * @return 比较结果：-1表示小于，0表示等于，1表示大于
+     */
     @Override
-    public int compareTo(Object o) {
+    public int compareTo(LogEntry o) {
         if (o == null) {
             return -1;
         }
-        if (this.getIndex() > ((LogEntry) o).getIndex()) {
+        if (this.getIndex() > o.getIndex()) {
             return 1;
         }
         return -1;

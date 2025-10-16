@@ -29,8 +29,11 @@ import org.slf4j.LoggerFactory;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
- *
- * 默认的一致性模块实现.
+ * 默认的一致性模块实现
+ * 
+ * 实现了Raft协议的核心一致性逻辑：
+ * 1. 请求投票RPC - 处理来自候选人的投票请求
+ * 2. 附加日志RPC - 处理来自Leader的日志复制请求
  *
  * @author 莫那·鲁道
  */
@@ -38,13 +41,14 @@ import java.util.concurrent.locks.ReentrantLock;
 @Getter
 public class DefaultConsensus implements Consensus {
 
-
     private static final Logger LOGGER = LoggerFactory.getLogger(DefaultConsensus.class);
 
-
+    /** 关联的节点实例 */
     public final DefaultNode node;
 
+    /** 投票锁，确保投票请求的原子性处理 */
     public final ReentrantLock voteLock = new ReentrantLock();
+    /** 附加日志锁，确保日志复制请求的原子性处理 */
     public final ReentrantLock appendLock = new ReentrantLock();
 
     public DefaultConsensus(DefaultNode node) {
@@ -52,55 +56,57 @@ public class DefaultConsensus implements Consensus {
     }
 
     /**
-     * 请求投票 RPC
+     * 请求投票 RPC - 处理来自候选人的投票请求
      *
-     * 接收者实现：
-     *      如果term < currentTerm返回 false （5.2 节）
-     *      如果 votedFor 为空或者就是 candidateId，并且候选人的日志至少和自己一样新，那么就投票给他（5.2 节，5.4 节）
+     * Raft协议投票规则：
+     * 1. 如果term < currentTerm返回 false （5.2 节）
+     * 2. 如果 votedFor 为空或者就是 candidateId，并且候选人的日志至少和自己一样新，那么就投票给他（5.2 节，5.4 节）
+     * 
+     * @param param 投票请求参数
+     * @return 投票结果
      */
-    // todo 发送这个请求的逻辑在哪？
-    // todo 这里使用tryLock,是因为每个请求投票使用了一个线程来处理？不使用队列？
     @Override
     public RvoteResult requestVote(RvoteParam param) {
         try {
             RvoteResult.Builder builder = RvoteResult.newBuilder();
+            // 尝试获取投票锁，如果获取失败说明有其他投票请求在处理
             if (!voteLock.tryLock()) {
                 return builder.term(node.getCurrentTerm()).voteGranted(false).build();
             }
 
-            // 对方任期没有自己新
+            // 规则1：如果对方任期号小于自己的任期号，拒绝投票
             if (param.getTerm() < node.getCurrentTerm()) {
                 return builder.term(node.getCurrentTerm()).voteGranted(false).build();
             }
 
-            // (当前节点并没有投票 或者 已经投票过了且是对方节点) && 对方日志和自己一样新
+            // 记录投票信息，用于调试
             LOGGER.info("node {} current vote for [{}], param candidateId : {}", node.peerSet.getSelf(), node.getVotedFor(), param.getCandidateId());
             LOGGER.info("node {} current term {}, peer term : {}", node.peerSet.getSelf(), node.getCurrentTerm(), param.getTerm());
 
+            // 规则2：检查是否可以投票给这个候选人
             if ((StringUtil.isNullOrEmpty(node.getVotedFor()) || node.getVotedFor().equals(param.getCandidateId()))) {
-
-                // todo 这里为什么不用状态机里的数据
+                // 检查候选人的日志是否至少和自己一样新
                 if (node.getLogModule().getLast() != null) {
-                    // 对方没有自己新
+                    // 如果候选人的最后日志任期号小于自己的，拒绝投票
                     if (node.getLogModule().getLast().getTerm() > param.getLastLogTerm()) {
                         return RvoteResult.fail();
                     }
-                    // 对方没有自己新
+                    // 如果候选人的最后日志索引小于自己的，拒绝投票
                     if (node.getLogModule().getLastIndex() > param.getLastLogIndex()) {
                         return RvoteResult.fail();
                     }
                 }
 
-                // 切换状态
-                node.status = NodeStatus.FOLLOWER;
-                // 更新
-                node.peerSet.setLeader(new Peer(param.getCandidateId()));
-                node.setCurrentTerm(param.getTerm());
-                node.setVotedFor(param.getServerId());
-                // 返回成功
+                // 投票给候选人，更新节点状态
+                node.status = NodeStatus.FOLLOWER;  // 转为Follower状态
+                node.peerSet.setLeader(new Peer(param.getCandidateId()));  // 设置新的Leader
+                node.setCurrentTerm(param.getTerm());  // 更新任期号
+                node.setVotedFor(param.getCandidateId());  // 记录投票给谁
+                // 返回投票成功
                 return builder.term(node.currentTerm).voteGranted(true).build();
             }
 
+            // 已经投票给其他人，拒绝投票
             return builder.term(node.currentTerm).voteGranted(false).build();
 
         } finally {
@@ -110,62 +116,65 @@ public class DefaultConsensus implements Consensus {
 
 
     /**
-     * 附加日志(多个日志,为了提高效率) RPC
+     * 附加日志 RPC - 处理来自Leader的日志复制请求
      *
-     * 接收者实现：
-     *    如果 term < currentTerm 就返回 false （5.1 节）
-     *    如果日志在 prevLogIndex 位置处的日志条目的任期号和 prevLogTerm 不匹配，则返回 false （5.3 节）
-     *    如果已经存在的日志条目和新的产生冲突（索引值相同但是任期号不同），删除这一条和之后所有的 （5.3 节）
-     *    附加任何在已有的日志中不存在的条目
-     *    如果 leaderCommit > commitIndex，令 commitIndex 等于 leaderCommit 和 新日志条目索引值中较小的一个
+     * Raft协议附加日志规则：
+     * 1. 如果 term < currentTerm 就返回 false （5.1 节）
+     * 2. 如果日志在 prevLogIndex 位置处的日志条目的任期号和 prevLogTerm 不匹配，则返回 false （5.3 节）
+     * 3. 如果已经存在的日志条目和新的产生冲突（索引值相同但是任期号不同），删除这一条和之后所有的 （5.3 节）
+     * 4. 附加任何在已有的日志中不存在的条目
+     * 5. 如果 leaderCommit > commitIndex，令 commitIndex 等于 leaderCommit 和 新日志条目索引值中较小的一个
+     * 
+     * @param param 附加日志请求参数
+     * @return 附加日志结果
      */
     @Override
     public AentryResult appendEntries(AentryParam param) {
         AentryResult result = AentryResult.fail();
         try {
+            // 尝试获取附加日志锁，确保原子性处理
             if (!appendLock.tryLock()) {
                 return result;
             }
 
             result.setTerm(node.getCurrentTerm());
-            // 不够格
+            // 规则1：如果Leader的任期号小于自己的任期号，拒绝请求
             if (param.getTerm() < node.getCurrentTerm()) {
                 return result;
             }
 
+            // 收到有效Leader的请求，重置选举和心跳时间
             node.preHeartBeatTime = System.currentTimeMillis();
             node.preElectionTime = System.currentTimeMillis();
             node.peerSet.setLeader(new Peer(param.getLeaderId()));
 
-            // 够格
+            // 如果Leader的任期号大于等于自己的任期号，转为Follower
             if (param.getTerm() >= node.getCurrentTerm()) {
                 LOGGER.debug("node {} become FOLLOWER, currentTerm : {}, param Term : {}, param serverId = {}",
                     node.peerSet.getSelf(), node.currentTerm, param.getTerm(), param.getServerId());
-                // 认怂
                 node.status = NodeStatus.FOLLOWER;
             }
-            // 使用对方的 term.
+            // 更新自己的任期号为Leader的任期号
             node.setCurrentTerm(param.getTerm());
 
-            //心跳
+            // 处理心跳请求（空日志）
             if (param.getEntries() == null || param.getEntries().length == 0) {
                 LOGGER.info("node {} append heartbeat success , he's term : {}, my term : {}",
                     param.getLeaderId(), param.getTerm(), node.getCurrentTerm());
 
-                // 处理 leader 已提交但未应用到状态机的日志
-
-                // 下一个需要提交的日志的索引（如有）
+                // 处理Leader已提交但未应用到状态机的日志
+                // 下一个需要提交的日志的索引
                 long nextCommit = node.getCommitIndex() + 1;
 
-                //如果 leaderCommit > commitIndex，令 commitIndex 等于 leaderCommit 和 新日志条目索引值中较小的一个
+                // 规则5：如果 leaderCommit > commitIndex，令 commitIndex 等于 leaderCommit 和 新日志条目索引值中较小的一个
                 if (param.getLeaderCommit() > node.getCommitIndex()) {
                     int commitIndex = (int) Math.min(param.getLeaderCommit(), node.getLogModule().getLastIndex());
                     node.setCommitIndex(commitIndex);
                     node.setLastApplied(commitIndex);
                 }
 
+                // 应用所有已提交但未应用的日志到状态机
                 while (nextCommit <= node.getCommitIndex()){
-                    // 提交之前的日志
                     node.stateMachine.apply(node.logModule.read(nextCommit));
                     nextCommit++;
                 }
