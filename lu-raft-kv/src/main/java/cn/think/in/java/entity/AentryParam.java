@@ -46,11 +46,10 @@ public class AentryParam implements Serializable {
     /** 领导人的 Id，以便于跟随者重定向请求 */
     private String leaderId;
 
-    /**新的日志条目紧随之前的索引值  */
-    // TODO 到底是不是已经提交的
+    /**新的日志条目紧随之前的索引值，leader的日志中发送的日志的前一条日志的index  */
     private long prevLogIndex;
 
-    /** prevLogIndex 条目的任期号  */
+    /** prevLogIndex 条目的任期号，leader的日志中发送的日志的前一条日志的term  */
     private long preLogTerm;
 
     /** 准备存储的日志条目（表示心跳时为空；一次性发送多个是为了提高效率） */
